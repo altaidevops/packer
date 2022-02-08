@@ -1,46 +1,48 @@
+properties([
+    parameters([
+        choice(choices: ['dev', 'qa', 'prod'], description: 'Choose environment', name: 'environment')
+    ])
+])
 
-if(env.BRANCH_NAME ==~ "dev-.*"){
-    environment="dev"
-    region="us-east-1"
+if( params.environment == "dev" ){
+    aws_region_var = "us-east-1"
 }
-else if(env.BRANCH_NAME ==~ "qa-.*"){
-    environment="qa"
-    region="us-east-2"
+else if( params.environment == "qa" ){
+    aws_region_var = "us-east-2"
 }
-else{
-    environment="prod"
-    region="us-west-2"
+else if( params.environment == "prod" ){
+    aws_region_var = "us-west-2"
+}
+else {
+    error 'Parameter was not set'
 }
 
-node("worker1"){
-    stage("Pull code"){
-        checkout scm
+def aminame = "apache-${UUID.randomUUID().toString()}"
+
+node('packer'){
+    stage("Pull Template"){
+        git 'https://github.com/altaidevops/packer.git'
     }
 
-    image_name="$environment-apache-${UUID.randomUUID().toString()}"
-
-    withEnv(["AWS_REGION=$region", "PACKER_AMI_NAME=$image_name"]) {
-        withCredentials([usernamePassword(credentialsId: 'aws-key', passwordVariable: 'AWS_SECRET_ACCESS_KEY', usernameVariable: 'AWS_ACCESS_KEY_ID')]) {
-
+    withCredentials([usernamePassword(credentialsId: 'aws-key', passwordVariable: 'AWS_SECRET_ACCESS_KEY', usernameVariable: 'AWS_ACCESS_KEY_ID')]) {
+        withEnv(["AWS_REGION=${aws_region_var}", "PACKER_AMI_NAME=${aminame}"]) {
             stage("Validate"){
-                sh '''
+                sh """
                     packer validate apache.json
-                '''
+                """
             }
 
             stage("Build"){
-                sh '''
+                sh """
                     packer build apache.json
-                '''
+                """
+                
+                build job: 'Terraform-EC2', parameters: [
+                    string(name: 'environment', value: "${params.environment}"),
+                    string(name: 'aminame', value: "${aminame}"),
+                    string(name: 'terraformaction', value: 'apply')
+                ]
             }
         }
-    }
-    
-    stage("Create Instance"){
-        build job: 'terraform-ec2', parameters: [
-            string(name: 'environment', value: "$environment"),
-            string(name: 'ami_name', value: "$image_name"),
-            booleanParam(name: 'command', value: true)
-            ]
     }
 }
